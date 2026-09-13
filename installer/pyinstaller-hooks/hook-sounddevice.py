@@ -29,14 +29,14 @@ datas = []
 module_dir = pathlib.Path(get_module_file_attribute('sounddevice')).parent
 data_dir = module_dir / '_sounddevice_data' / 'portaudio-binaries'
 
-if is_darwin:
-    # for Macos Big Sur, the stable portaudio (19.6.0) makes Friture freeze on startup
-    # so we build our own and bundle it manually here
+if is_darwin and os.path.isfile("/usr/local/lib/libportaudio.dylib"):
+    # Historical workaround: on macOS Big Sur the stable portaudio (19.6.0)
+    # froze Friture on startup, so CI builds one and installs it here. Use it
+    # when present, but fall through to the wheel's bundled universal library
+    # otherwise - which is what every other platform already does.
     path = "/usr/local/lib/libportaudio.dylib"
     destdir = str(data_dir.relative_to(module_dir))
     binaries += [(path, destdir)]
-    if not os.path.isfile(path):
-        raise ValueError('libportaudio could not be found')
 elif data_dir.is_dir():
     destdir = str(data_dir.relative_to(module_dir))
 
