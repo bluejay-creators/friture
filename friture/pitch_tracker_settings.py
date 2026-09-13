@@ -17,6 +17,8 @@
 # You should have received a copy of the GNU General Public License
 # along with Friture.  If not, see <http://www.gnu.org/licenses/>.
 
+import os
+
 from PyQt6 import QtWidgets
 from PyQt6.QtCore import QSettings
 from typing import Any
@@ -102,7 +104,85 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
             lambda _: view_model.set_sa(self.sa.currentData()))
         self.form_layout.addRow("Sa (tonic):", self.sa)
 
+        # Reference track: a song or a teacher's recording, played back while its
+        # pitch curve is drawn alongside the live one.
+        self.view_model = view_model
+        self.reference_path = ""
+        ref_row = QtWidgets.QHBoxLayout()
+        self.ref_label = QtWidgets.QLabel("none", self)
+        self.ref_label.setMinimumWidth(160)
+        self.ref_browse = QtWidgets.QPushButton("Browse…", self)
+        self.ref_browse.clicked.connect(self._browse_reference)
+        self.ref_clear = QtWidgets.QPushButton("Clear", self)
+        self.ref_clear.clicked.connect(self._clear_reference)
+        ref_row.addWidget(self.ref_label, 1)
+        ref_row.addWidget(self.ref_browse)
+        ref_row.addWidget(self.ref_clear)
+        self.form_layout.addRow("Reference:", ref_row)
+
+        self.transpose = QtWidgets.QSpinBox(self)
+        self.transpose.setRange(-24, 24)
+        self.transpose.setValue(0)
+        self.transpose.setSuffix(" semitones")
+        self.transpose.setObjectName("transpose")
+        self.transpose.valueChanged.connect(view_model.set_transpose)
+        self.form_layout.addRow("Transpose ref:", self.transpose)
+
+        play_row = QtWidgets.QHBoxLayout()
+        self.ref_play = QtWidgets.QPushButton("Play", self)
+        self.ref_play.setEnabled(False)
+        self.ref_play.clicked.connect(self._toggle_reference)
+        self.ref_status = QtWidgets.QLabel("", self)
+        play_row.addWidget(self.ref_play)
+        play_row.addWidget(self.ref_status, 1)
+        self.form_layout.addRow("", play_row)
+
+        view_model.reference.loaded.connect(self._on_reference_loaded)
+        view_model.reference.load_failed.connect(self._on_reference_failed)
+        view_model.reference.playing_changed.connect(self._on_playing_changed)
+
         self.setLayout(self.form_layout)
+
+    def _browse_reference(self) -> None:
+        start = os.path.dirname(self.reference_path) if self.reference_path else os.path.expanduser("~")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Choose a reference recording", start,
+            "Audio files (*.mp3 *.m4a *.aac *.wav *.flac *.ogg *.opus *.wma *.mp4 *.webm);;All files (*)")
+        if path:
+            self._set_reference(path)
+
+    def _set_reference(self, path: str) -> None:
+        self.reference_path = path
+        self.ref_label.setText(os.path.basename(path))
+        self.ref_label.setToolTip(path)
+        self.ref_status.setText("loading…")
+        self.ref_play.setEnabled(False)
+        self.view_model.set_reference_file(path)
+
+    def _clear_reference(self) -> None:
+        self.reference_path = ""
+        self.ref_label.setText("none")
+        self.ref_label.setToolTip("")
+        self.ref_status.setText("")
+        self.ref_play.setEnabled(False)
+        self.view_model.clear_reference()
+
+    def _toggle_reference(self) -> None:
+        if self.view_model.reference.is_playing():
+            self.view_model.stop_reference()
+        else:
+            self.view_model.play_reference()
+
+    def _on_reference_loaded(self, status: str) -> None:
+        self.ref_status.setText(status)
+        self.ref_play.setEnabled(True)
+
+    def _on_reference_failed(self, error: str) -> None:
+        self.ref_status.setText(f"failed: {error}")
+        self.ref_play.setEnabled(False)
+
+    def _on_playing_changed(self, playing: bool) -> None:
+        self.ref_play.setText("Stop" if playing else "Play")
 
     def save_state(self, settings: QSettings) -> None:
         settings.setValue("min_freq", self.min_freq.value())
@@ -111,10 +191,16 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         settings.setValue("conf", self.conf.value())
         settings.setValue("min_db", self.min_db.value())
         settings.setValue("sa_midi", self.sa.currentData())
+        settings.setValue("reference_path", self.reference_path)
+        settings.setValue("transpose", self.transpose.value())
 
     def restore_state(self, settings: QSettings) -> None:
         self.sa.setCurrentIndex(self.sa.findData(
             settings.value("sa_midi", DEFAULT_SA_MIDI, type=int)))
+        self.transpose.setValue(settings.value("transpose", 0, type=int))
+        path = settings.value("reference_path", "", type=str)
+        if path and os.path.exists(path):
+            self._set_reference(path)
         self.min_freq.setValue(
             settings.value("min_freq", DEFAULT_MIN_FREQ, type=int))
         self.max_freq.setValue(

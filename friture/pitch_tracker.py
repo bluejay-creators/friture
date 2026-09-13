@@ -27,6 +27,7 @@
 from collections.abc import Generator
 import logging
 import math as m
+import time
 import numpy as np
 from PyQt6 import QtWidgets
 from PyQt6.QtCore import QSettings, QObject
@@ -51,6 +52,7 @@ from friture.pitch_tracker_settings import (
 )
 from friture.plotting.coordinateTransform import CoordinateTransform
 import friture.plotting.frequency_scales as fscales
+from friture.reference_track import ReferenceTrack
 from friture.ringbuffer import RingBuffer
 from friture.store import GetStore
 
@@ -63,8 +65,15 @@ class PitchTrackerWidget(QObject):
         self._pitch_tracker_data = PitchTracker_Data(GetStore())
 
         self._curve = Curve()
-        self._curve.name = "Ch1" # type: ignore [assignment]
+        self._curve.name = "Voice" # type: ignore [assignment]
         self._pitch_tracker_data.add_plot_item(self._curve)
+
+        # Reference track (a song or a teacher's recording) drawn as a second
+        # curve on the same timeline while it plays, for comparison.
+        self._ref_curve = Curve()
+        self._ref_curve.name = "Reference" # type: ignore [assignment]
+        self._pitch_tracker_data.add_plot_item(self._ref_curve)
+        self.reference = ReferenceTrack(self)
 
         # cast for qt properties which aren't properly typed
         tracker_data: Any = self._pitch_tracker_data
@@ -114,6 +123,15 @@ class PitchTrackerWidget(QObject):
 
     def update_curve(self) -> None:
         pitches = self.tracker.get_estimates(self.duration)
+        times = np.linspace(0, 1.0, pitches.shape[0])
+        self._curve.setData(times, self._to_screen(pitches))
+
+        ref = self.reference.window(time.monotonic(), self.duration, pitches.shape[0])
+        if ref is None:
+            ref = np.full(pitches.shape[0], np.nan)
+        self._ref_curve.setData(times, self._to_screen(ref))
+
+    def _to_screen(self, pitches: np.ndarray) -> np.ndarray:
         # Local patch (2026-09-13): unvoiced frames are NaN and the ring buffer
         # starts as zeros; both become gaps in the curve rather than lines to the
         # plot edge (PlotCurve skips non-finite samples).
@@ -121,9 +139,32 @@ class PitchTrackerWidget(QObject):
         pitches = 1.0 - self.vertical_transform.toScreen(pitches) # type: ignore
         # Out-of-range estimates (usually octave errors) used to be clipped to the
         # plot edge, which drew a spike to the top/bottom; treat them as gaps too.
-        pitches = np.where((pitches >= 0) & (pitches <= 1), pitches, np.nan)
-        times = np.linspace(0, 1.0, pitches.shape[0])
-        self._curve.setData(times, pitches)
+        return np.where((pitches >= 0) & (pitches <= 1), pitches, np.nan)
+
+    # ---- reference track -------------------------------------------------
+
+    def _make_reference_tracker(self, input_buf: RingBuffer) -> "PitchTracker":
+        # same rules as the live tracker so both curves are judged alike
+        return PitchTracker(input_buf, min_freq=self.min_freq, max_freq=self.max_freq,
+                            min_db=self.tracker.min_db, conf=self.tracker.conf)
+
+    def set_reference_file(self, path: str) -> None:
+        self.reference.load(path, self._make_reference_tracker)
+
+    def clear_reference(self) -> None:
+        self.reference.clear()
+
+    def set_transpose(self, semitones: int) -> None:
+        self.reference.transpose_semitones = semitones
+
+    def play_reference(self) -> None:
+        self.reference.play()
+
+    def stop_reference(self) -> None:
+        self.reference.stop()
+
+    def cleanup(self) -> None:
+        self.reference.stop()
 
     # method
     def canvasUpdate(self) -> None:
