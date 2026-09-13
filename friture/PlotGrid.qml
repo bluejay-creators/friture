@@ -9,7 +9,9 @@ Item {
     SystemPalette { id: systemPalette; colorGroup: SystemPalette.Active }
 
     property double lineWidth: 1
-    property color lineColor: systemPalette.button
+    // Local patch (2026-09-13): `button` equals the plot background on Linux
+    // (Fusion + GTK palette, both #fcfcfc), which made every grid line invisible.
+    property color lineColor: systemPalette.dark
 
     required property ScaleDivision vertical_scale_division
     property bool show_minor_vertical: false
