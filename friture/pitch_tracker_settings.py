@@ -32,6 +32,8 @@ DEFAULT_MIN_DB = -50.0
 DEFAULT_C_RES = 10      # Pitch resolution in cents. Default of 10 produces 120 kernels per octave.
 DEFAULT_P_CONF = 0.50   # Confidence threshold for pitch estimation. Unitless.
 DEFAULT_P_DELTA = 2     # Maximum pitch jump between frames in semitones.
+DEFAULT_SA_MIDI = 48    # Local patch: tonic (Sa) for the sargam axis. 48 = C3 ≈ 130.8 Hz.
+SA_MIDI_RANGE = range(36, 73)  # C2 .. C5
 
 class PitchTrackerSettingsDialog(QtWidgets.QDialog):
     def __init__(self, parent: QtWidgets.QWidget, view_model: Any) -> None:
@@ -89,6 +91,17 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         self.min_db.valueChanged.connect(view_model.set_min_db) # type: ignore
         self.form_layout.addRow("Min Amplitude:", self.min_db)
 
+        # Local patch (2026-09-13): tonic for the sargam axis labels/colours.
+        from friture.plotting.frequency_scales import midi_to_frequency, midi_to_western
+        self.sa = QtWidgets.QComboBox(self)
+        for midi in SA_MIDI_RANGE:
+            self.sa.addItem(f"{midi_to_western(midi)}  ({midi_to_frequency(midi):.1f} Hz)", midi)
+        self.sa.setCurrentIndex(self.sa.findData(DEFAULT_SA_MIDI))
+        self.sa.setObjectName("sa")
+        self.sa.currentIndexChanged.connect(
+            lambda _: view_model.set_sa(self.sa.currentData()))
+        self.form_layout.addRow("Sa (tonic):", self.sa)
+
         self.setLayout(self.form_layout)
 
     def save_state(self, settings: QSettings) -> None:
@@ -97,8 +110,11 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         settings.setValue("duration", self.duration.value())
         settings.setValue("conf", self.conf.value())
         settings.setValue("min_db", self.min_db.value())
+        settings.setValue("sa_midi", self.sa.currentData())
 
     def restore_state(self, settings: QSettings) -> None:
+        self.sa.setCurrentIndex(self.sa.findData(
+            settings.value("sa_midi", DEFAULT_SA_MIDI, type=int)))
         self.min_freq.setValue(
             settings.value("min_freq", DEFAULT_MIN_FREQ, type=int))
         self.max_freq.setValue(

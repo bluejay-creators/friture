@@ -25,10 +25,14 @@ import friture.plotting.frequency_scales as fscales
 from friture.plotting.coordinateTransform import CoordinateTransform
 
 class Tick(QtCore.QObject):
-    def __init__(self, value, logical_value, parent=None):
+    def __init__(self, value, logical_value, parent=None, label="", color=""):
         super().__init__(parent)
         self._value = value
         self._logical_value = logical_value
+        # Local patch (2026-09-13): optional per-tick label and colour, set by
+        # scales that provide tick_info() (sargam scale); empty = default look.
+        self._label = label
+        self._color = color
 
     @pyqtProperty(str, constant = True) # type: ignore
     def value(self):
@@ -37,6 +41,14 @@ class Tick(QtCore.QObject):
     @pyqtProperty(float, constant = True) # type: ignore
     def logicalValue(self):
         return self._logical_value
+
+    @pyqtProperty(str, constant = True) # type: ignore
+    def label(self):
+        return self._label
+
+    @pyqtProperty(str, constant = True) # type: ignore
+    def color(self):
+        return self._color
 
 # takes min/max of the scale, and returns appropriate ticks (selected for proper number, rounding)
 class ScaleDivision(QtCore.QObject):
@@ -87,10 +99,13 @@ class ScaleDivision(QtCore.QObject):
         precision = fscales.numberPrecision(interval)
         digits = max(0, int(-precision))
 
+        tick_info = getattr(self.scale, "tick_info", None)
+
         def buildTick(tick):
             value = '{0:.{1}f}'.format(tick, digits)
             logical_value = self._logical_coordinate_transform.toScreen(tick)
-            return Tick(value, logical_value)
+            label, color = tick_info(tick) if tick_info else ("", "")
+            return Tick(value, logical_value, label=label, color=color)
 
         self._logical_major_ticks = list(map(buildTick, self.major_ticks))
         self.logical_major_ticks_changed.emit()
@@ -98,7 +113,8 @@ class ScaleDivision(QtCore.QObject):
         def buildTick(tick):
             value = tick
             logical_value = self._logical_coordinate_transform.toScreen(tick)
-            return Tick(value, logical_value)
+            label, color = tick_info(tick) if tick_info else ("", "")
+            return Tick(value, logical_value, label=label, color=color)
 
         self._logical_minor_ticks = list(map(buildTick, self.minor_ticks))
         self.logical_minor_ticks_changed.emit()

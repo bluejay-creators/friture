@@ -46,6 +46,7 @@ class PitchTracker_Data(Scope_Data):
     def __init__(self, parent: QtCore.QObject):
         super().__init__(parent)
         self._pitch = 0.0
+        self.sa_midi = 48  # Local patch: tonic for the sargam readout (set by the widget)
 
     @pyqtProperty(str, notify=pitch_changed)
     def pitch(self) -> str:
@@ -73,4 +74,7 @@ class PitchTracker_Data(Scope_Data):
         if not self._pitch or np.isnan(self._pitch):
             return '--'
         else:
-            return frequency_to_note(self._pitch)
+            # Local patch: swara relative to Sa, then the Western name.
+            from friture.plotting.frequency_scales import Sargam
+            label, _ = Sargam(self.sa_midi).tick_info(self._pitch)
+            return label

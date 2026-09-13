@@ -46,6 +46,7 @@ from friture.pitch_tracker_settings import (
     DEFAULT_C_RES,
     DEFAULT_P_CONF,
     DEFAULT_P_DELTA,
+    DEFAULT_SA_MIDI,
     PitchTrackerSettingsDialog,
 )
 from friture.plotting.coordinateTransform import CoordinateTransform
@@ -79,11 +80,11 @@ class PitchTrackerWidget(QObject):
         self.max_freq = DEFAULT_MAX_FREQ
         self._pitch_tracker_data.vertical_axis.setRange( # type: ignore
             self.min_freq, self.max_freq)
-        self._pitch_tracker_data.vertical_axis.setScale( # type: ignore
-            fscales.OctaveC)
         self.vertical_transform = CoordinateTransform(
             self.min_freq, self.max_freq, 1, 0, 0)
-        self.vertical_transform.setScale(fscales.OctaveC)
+        # Local patch (2026-09-13): sargam axis anchored on a configurable Sa
+        # (replaces the fixed OctaveC scale; same log2 mapping, different ticks).
+        self.set_sa(DEFAULT_SA_MIDI)
 
         self.duration = DEFAULT_DURATION
         self._pitch_tracker_data.horizontal_axis.setRange( # type: ignore
@@ -138,6 +139,15 @@ class PitchTrackerWidget(QObject):
     def set_duration(self, value: int) -> None:
         self.duration = value
         self._pitch_tracker_data.horizontal_axis.setRange(-self.duration, 0.) # type: ignore
+
+    def set_sa(self, sa_midi: int) -> None:
+        self.sa_midi = sa_midi
+        scale = fscales.Sargam(sa_midi)
+        self._pitch_tracker_data.vertical_axis.setScale(scale) # type: ignore
+        self.vertical_transform.setScale(scale)
+        self._pitch_tracker_data.sa_midi = sa_midi # type: ignore
+        if hasattr(self, "tracker"):  # first call happens before the tracker exists
+            self.update_curve()
 
     def set_min_db(self, value: float) -> None:
         self.tracker.min_db = value

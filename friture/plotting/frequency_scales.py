@@ -259,6 +259,66 @@ class OctaveC(object):
         return major_ticks, minor_ticks
 
 
+# Local patch (2026-09-13): sargam scale for riyaz. Major ticks at Sa of each
+# octave, minor ticks at every semitone, each tick carrying a swara label and a
+# per-pitch-class colour (same hue in every octave, Sa = red).
+SARGAM_NAMES = ["Sa", "re", "Re", "ga", "Ga", "ma", "Ma", "Pa", "dha", "Dha", "ni", "Ni"]
+WESTERN_NAMES = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"]
+
+def midi_to_frequency(midi: int) -> float:
+    return 440.0 * 2 ** ((midi - 69) / 12)
+
+def midi_to_western(midi: int) -> str:
+    return f"{WESTERN_NAMES[midi % 12]}{midi // 12 - 1}"
+
+def pitch_class_color(pitch_class: int) -> str:
+    import colorsys
+    r, g, b = colorsys.hls_to_rgb(pitch_class / 12.0, 0.45, 0.85)
+    return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
+
+def Sargam(sa_midi: int):
+    '''Factory: a log2 scale anchored on the given Sa (MIDI note number).'''
+    sa_freq = midi_to_frequency(sa_midi)
+
+    class SargamScale(object):
+        NAME = 'Sargam'
+
+        @staticmethod
+        def transform(frequency: float) -> float:
+            return np.log2(np.fmax(frequency, 1e-20))
+
+        @staticmethod
+        def inverse(logs: float) -> float:
+            return 2 ** logs
+
+        @staticmethod
+        def ticks(scale_min, scale_max) -> Tuple[List[float], List[float]]:
+            if scale_min > scale_max:
+                scale_min, scale_max = (scale_max, scale_min)
+            scale_min = max(1e-20, scale_min)
+            scale_max = max(1e-20, scale_max)
+            min_oct = ceil(np.log2(scale_min / sa_freq))
+            max_oct = floor(np.log2(scale_max / sa_freq))
+            major_ticks = [sa_freq * (2 ** i) for i in range(min_oct, max_oct + 1)]
+            semis = 2 ** (np.arange(1, 12) / 12)  # exclude 0: Sa is a major tick
+            minor_ticks = [sa_freq * (2 ** a) * t
+                for a in range(min_oct - 1, max_oct + 1)
+                for t in semis]
+            minor_ticks = [t for t in minor_ticks if scale_min <= t <= scale_max]
+            return major_ticks, minor_ticks
+
+        @staticmethod
+        def tick_info(frequency: float) -> Tuple[str, str]:
+            '''(label, colour) for a tick: swara with octave mark + Western name.'''
+            semis = int(round(np.log2(frequency / sa_freq) * 12))
+            octave, pc = divmod(semis, 12)
+            mark = "'" * octave if octave > 0 else "." * (-octave)
+            label = f"{SARGAM_NAMES[pc]}{mark}  {midi_to_western(sa_midi + semis)}"
+            return label, pitch_class_color(pc)
+
+    return SargamScale
+
+
 class Mel(object):
     NAME = 'Mel'
 

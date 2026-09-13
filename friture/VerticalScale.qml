@@ -14,7 +14,8 @@ Item {
     readonly property int majorTickLength: 8
     readonly property int minorTickLength: 4
 
-    property int tickLabelMaxWidth: maxTextWidth(scale_division.logicalMajorTicks)
+    property int tickLabelMaxWidth: Math.max(maxTextWidth(scale_division.logicalMajorTicks),
+                                             maxLabelWidth(scale_division.logicalMinorTicks))
 
     implicitWidth: tickLabelMaxWidth + 1 + majorTickLength
 
@@ -23,12 +24,32 @@ Item {
     function maxTextWidth(majorTicks) {
         var maxWidth = 0
         for (var i = 0; i < majorTicks.length; i++) {
-            var textWidth = fontMetrics.boundingRect(majorTicks[i].value).width;
+            // a tick with its own label (sargam scale) shows that instead of the number
+            var text = majorTicks[i].label !== "" ? majorTicks[i].label : majorTicks[i].value
+            var textWidth = fontMetrics.boundingRect(text).width;
             if (textWidth > maxWidth) {
                 maxWidth = textWidth;
             }
         }
         return Math.ceil(maxWidth)
+    }
+
+    // minor ticks may carry labels too (sargam scale)
+    function maxLabelWidth(ticks) {
+        var maxWidth = 0
+        for (var i = 0; i < ticks.length; i++) {
+            if (ticks[i].label === "") continue
+            var textWidth = smallFontMetrics.boundingRect(ticks[i].label).width;
+            if (textWidth > maxWidth) {
+                maxWidth = textWidth;
+            }
+        }
+        return Math.ceil(maxWidth)
+    }
+
+    FontMetrics {
+        id: smallFontMetrics
+        font.pointSize: fontMetrics.font.pointSize * 0.85
     }
 
     FontMetrics {
@@ -86,12 +107,34 @@ Item {
 
                 Text {
                     id: tickLabel
-                    text: modelData.value
+                    text: modelData.label !== "" ? modelData.label : modelData.value
+                    font.bold: modelData.label !== ""
                     anchors.verticalCenter: parent.verticalCenter
                     anchors.right: parent.right
                     verticalAlignment: Text.AlignVCenter
                     horizontalAlignment: Text.AlignRight
-                    color: systemPalette.windowText
+                    color: modelData.color !== "" ? modelData.color : systemPalette.windowText
+                }
+            }
+        }
+
+        // labelled minor ticks (sargam scale): every semitone gets its swara
+        Repeater {
+            model: scale_division.logicalMinorTicks
+
+            Item {
+                implicitWidth: tickLabelMaxWidth
+                y: (1. - modelData.logicalValue) * yscaleColumn.height
+                visible: modelData.label !== ""
+
+                Text {
+                    text: modelData.label
+                    font.pointSize: fontMetrics.font.pointSize * 0.85
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.right: parent.right
+                    verticalAlignment: Text.AlignVCenter
+                    horizontalAlignment: Text.AlignRight
+                    color: modelData.color !== "" ? modelData.color : systemPalette.windowText
                 }
             }
         }
