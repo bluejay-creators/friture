@@ -11,8 +11,13 @@ Item {
 
     required property ScaleDivision scale_division
 
+    // Local patch (2026-09-13): `mirrored` puts the axis line on the LEFT edge with
+    // ticks and labels extending to the right, for a scale placed right of the plot.
+    property bool mirrored: false
+
     readonly property int majorTickLength: 8
     readonly property int minorTickLength: 4
+    readonly property int tickDir: mirrored ? 1 : -1
 
     property int tickLabelMaxWidth: Math.max(maxTextWidth(scale_division.logicalMajorTicks),
                                              maxLabelWidth(scale_division.logicalMinorTicks))
@@ -48,16 +53,17 @@ Item {
     }
 
     FontMetrics {
+        id: fontMetrics
+    }
+
+    FontMetrics {
         id: smallFontMetrics
         font.pointSize: fontMetrics.font.pointSize * 0.85
     }
 
-    FontMetrics {
-        id: fontMetrics
-    }
-
+    // axis line: right edge normally, left edge when mirrored
     Shape {
-        anchors.right: yscaleColumn.right
+        x: mirrored ? 0 : yscaleColumn.width
 
         ShapePath {
             strokeWidth: 1
@@ -73,36 +79,33 @@ Item {
     Repeater {
         model: scale_division.logicalMajorTicks
 
-        Item {
-            anchors.right: yscaleColumn.right
-            implicitWidth: 1 + majorTickLength
-
+        Shape {
+            x: mirrored ? 0 : yscaleColumn.width
             y: (1. - modelData.logicalValue) * yscaleColumn.height
 
-            Shape {
-                anchors.right: parent.right
+            ShapePath {
+                strokeWidth: 1
+                strokeColor: systemPalette.windowText
+                fillColor: "transparent"
 
-                ShapePath {
-                    strokeWidth: 1
-                    strokeColor: systemPalette.windowText
-                    fillColor: "transparent"
-
-                    PathMove { x: 0; y: 0 }
-                    PathLine { x: -majorTickLength; y: 0 }
-                }
+                PathMove { x: 0; y: 0 }
+                PathLine { x: tickDir * majorTickLength; y: 0 }
             }
         }
     }
 
     Item {
         id: tickLabels
+        // labels sit inside the axis line, past the tick marks
+        x: mirrored ? majorTickLength + 1 : 0
+        width: tickLabelMaxWidth
 
         // QML docs discourage the use of multiple Shape objects. But the Repeater cannot be used inside Shape.
         Repeater {
             model: scale_division.logicalMajorTicks
 
             Item {
-                implicitWidth: tickLabelMaxWidth
+                width: tickLabelMaxWidth
                 y: (1. - modelData.logicalValue) * yscaleColumn.height
 
                 Text {
@@ -110,9 +113,10 @@ Item {
                     text: modelData.label !== "" ? modelData.label : modelData.value
                     font.bold: modelData.label !== ""
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.right: parent.right
+                    anchors.left: mirrored ? parent.left : undefined
+                    anchors.right: mirrored ? undefined : parent.right
                     verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
+                    horizontalAlignment: mirrored ? Text.AlignLeft : Text.AlignRight
                     color: modelData.color !== "" ? modelData.color : systemPalette.windowText
                 }
             }
@@ -123,7 +127,7 @@ Item {
             model: scale_division.logicalMinorTicks
 
             Item {
-                implicitWidth: tickLabelMaxWidth
+                width: tickLabelMaxWidth
                 y: (1. - modelData.logicalValue) * yscaleColumn.height
                 visible: modelData.label !== ""
 
@@ -131,9 +135,10 @@ Item {
                     text: modelData.label
                     font.pointSize: fontMetrics.font.pointSize * 0.85
                     anchors.verticalCenter: parent.verticalCenter
-                    anchors.right: parent.right
+                    anchors.left: mirrored ? parent.left : undefined
+                    anchors.right: mirrored ? undefined : parent.right
                     verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignRight
+                    horizontalAlignment: mirrored ? Text.AlignLeft : Text.AlignRight
                     color: modelData.color !== "" ? modelData.color : systemPalette.windowText
                 }
             }
@@ -144,21 +149,17 @@ Item {
     Repeater {
         model: scale_division.logicalMinorTicks
 
-        Item {
+        Shape {
+            x: mirrored ? 0 : yscaleColumn.width
             y: (1. - modelData.logicalValue) * yscaleColumn.height
-            anchors.right: parent.right
-        
-            Shape {
-                anchors.right: parent.right
 
-                ShapePath {
-                    strokeWidth: 1
-                    strokeColor: systemPalette.windowText
-                    fillColor: "transparent"
+            ShapePath {
+                strokeWidth: 1
+                strokeColor: systemPalette.windowText
+                fillColor: "transparent"
 
-                    PathMove { x: 0; y: 0 }
-                    PathLine { x: -minorTickLength; y: 0 }
-                }
+                PathMove { x: 0; y: 0 }
+                PathLine { x: tickDir * minorTickLength; y: 0 }
             }
         }
     }

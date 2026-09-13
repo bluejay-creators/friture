@@ -14,6 +14,10 @@ Rectangle {
     required property ScopeData scopedata
     default property alias content: plotItemPlaceholder.children
 
+    // Local patch (2026-09-13): place the vertical scale (and its axis name) to the
+    // right of the plot area instead of the left. Used by the pitch tracker.
+    property bool verticalScaleOnRight: false
+
     GridLayout {
         anchors.fill: parent
         rowSpacing: 2
@@ -31,6 +35,17 @@ Rectangle {
         Item {
             Layout.row: 1
             Layout.column: 0
+            visible: plot.verticalScaleOnRight
+
+            // spacer so that the first label of the horizontal scale is not clipped
+            // when the vertical scale is on the right
+            Layout.maximumWidth: implicitWidth
+            implicitWidth: horizontalScale.leftOverflow
+        }
+
+        Item {
+            Layout.row: 1
+            Layout.column: plot.verticalScaleOnRight ? 9 : 0
 
             // width vs. height: childrenRect doesn't take transformations into account.
             // https://bugreports.qt-project.org/browse/QTBUG-38953
@@ -41,7 +56,7 @@ Rectangle {
                 id: verticalAxisLabel
                 text: scopedata.vertical_axis.name
                 transformOrigin: Item.Center
-                rotation: -90
+                rotation: plot.verticalScaleOnRight ? 90 : -90
                 anchors.centerIn: parent
                 color: systemPalette.windowText
             }
@@ -50,8 +65,9 @@ Rectangle {
         VerticalScale {
             id: verticalScale
             Layout.row: 1
-            Layout.column: 1
+            Layout.column: plot.verticalScaleOnRight ? 8 : 1
             Layout.fillHeight: true
+            mirrored: plot.verticalScaleOnRight
 
             scale_division: scopedata.vertical_axis.scale_division
         }

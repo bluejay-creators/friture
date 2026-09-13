@@ -12,10 +12,12 @@ Item {
     Plot {
         id: plot
         scopedata: viewModel
+        // Local patch (2026-09-13): note readout on the left, frequency scale on the right
+        verticalScaleOnRight: true
 
         anchors.fill: null // override 'fill: parent' in Plot.qml
-        anchors.left: parent.left
-        anchors.right: pitchItem.left                
+        anchors.left: pitchItem.right
+        anchors.right: parent.right
         anchors.top: parent.top
         anchors.bottom: parent.bottom
 
@@ -36,7 +38,7 @@ Item {
         implicitWidth: pitchCol.implicitWidth
         implicitHeight: parent ? parent.height : 0
 
-        anchors.right: parent.right
+        anchors.left: parent.left
 
         SystemPalette { id: systemPalette; colorGroup: SystemPalette.Active }
         color: systemPalette.window
@@ -57,9 +59,13 @@ Item {
                 textFormat: Text.PlainText
                 font.pointSize: 14
                 font.bold: true
-                rightPadding: 6
-                horizontalAlignment: Text.AlignRight
-                Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                leftPadding: 6
+                horizontalAlignment: Text.AlignLeft
+                // Local patch (2026-09-13): fixed width sized to the widest sargam
+                // label, so the plot doesn't resize (jitter) as the note changes.
+                Layout.preferredWidth: fontMetrics.boundingRect("Dha''  G♯5").width + leftPadding
+                Layout.minimumWidth: Layout.preferredWidth
+                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                 color: systemPalette.windowText
             }
 
@@ -69,10 +75,10 @@ Item {
                 textFormat: Text.PlainText
                 font.pointSize: 14
                 font.bold: true
-                rightPadding: 6
-                horizontalAlignment: Text.AlignRight
+                leftPadding: 6
+                horizontalAlignment: Text.AlignLeft
                 Layout.preferredWidth: fontMetrics.boundingRect("000.0").width
-                Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                 color: systemPalette.windowText
             }
 
@@ -80,9 +86,9 @@ Item {
                 id: pitchUnit
                 text: plot.scopedata.pitch_unit
                 textFormat: Text.PlainText
-                rightPadding: 6
-                horizontalAlignment: Text.AlignRight
-                Layout.alignment: Qt.AlignTop | Qt.AlignRight
+                leftPadding: 6
+                horizontalAlignment: Text.AlignLeft
+                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                 color: systemPalette.windowText
             }
         }

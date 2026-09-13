@@ -17,6 +17,19 @@ Item {
     property int minorTickLength: 4
 
     property double rightOverflow: getRightOverflow(scale_division.logicalMajorTicks, xscaleColumn.width)
+    // Local patch (2026-09-13): how far the first label sticks out to the left
+    // (matters when nothing sits left of the plot, e.g. vertical scale on the right).
+    property double leftOverflow: getLeftOverflow(scale_division.logicalMajorTicks, xscaleColumn.width)
+
+    function getLeftOverflow(majorTicks, totalWidth) {
+        if (majorTicks.length == 0) {
+            return 0.
+        }
+        var firstMajorTick = majorTicks[0]
+        var textWidth = fontMetrics.boundingRect(firstMajorTick.value).width;
+        var tickPos = firstMajorTick.logicalValue * totalWidth
+        return Math.max(0., textWidth / 2 - tickPos)
+    }
 
     function getRightOverflow(majorTicks, totalWidth) {
         if (majorTicks.length == 0) {
