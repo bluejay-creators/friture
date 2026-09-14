@@ -120,7 +120,7 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         ref_row.addWidget(self.ref_clear)
         self.form_layout.addRow("Reference:", ref_row)
 
-        from friture.reference_track import find_demucs
+        from friture.reference_track import find_demucs, list_output_devices
         self.isolate = QtWidgets.QCheckBox("Isolate vocals (Demucs)", self)
         self.isolate.setObjectName("isolate_vocals")
         if find_demucs() is None:
@@ -138,6 +138,14 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         self.transpose.setObjectName("transpose")
         self.transpose.valueChanged.connect(view_model.set_transpose)
         self.form_layout.addRow("Transpose ref:", self.transpose)
+
+        self.output = QtWidgets.QComboBox(self)
+        for label, key in list_output_devices():
+            self.output.addItem(label, key)
+        self.output.setObjectName("output_device")
+        self.output.currentIndexChanged.connect(
+            lambda _: view_model.set_output_device(self.output.currentData()))
+        self.form_layout.addRow("Play through:", self.output)
 
         play_row = QtWidgets.QHBoxLayout()
         self.ref_play = QtWidgets.QPushButton("Play", self)
@@ -210,11 +218,14 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         settings.setValue("reference_path", self.reference_path)
         settings.setValue("transpose", self.transpose.value())
         settings.setValue("isolate_vocals", self.isolate.isChecked())
+        settings.setValue("output_device", self.output.currentData())
 
     def restore_state(self, settings: QSettings) -> None:
         self.sa.setCurrentIndex(self.sa.findData(
             settings.value("sa_midi", DEFAULT_SA_MIDI, type=int)))
         self.transpose.setValue(settings.value("transpose", 0, type=int))
+        index = self.output.findData(settings.value("output_device", "", type=str))
+        self.output.setCurrentIndex(max(index, 0))
         # set the checkbox before the path so the restore triggers one load, not two
         self.isolate.blockSignals(True)
         self.isolate.setChecked(self.isolate.isEnabled() and settings.value("isolate_vocals", False, type=bool))

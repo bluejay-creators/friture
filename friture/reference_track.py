@@ -21,9 +21,11 @@ play it back while exposing its pitch curve on the live timeline so a singer
 can compare against it."""
 
 import hashlib
+import json
 import logging
 import math
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -31,10 +33,11 @@ import sys
 import tempfile
 import threading
 import time
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
+import sounddevice as sd
 from sounddevice import OutputStream, CallbackStop
 
 from friture.audiobackend import SAMPLING_RATE
@@ -127,6 +130,38 @@ def separate_vocals(path: str, status: Callable[[str], None]) -> str:
     return cached
 
 
+# ---- output devices --------------------------------------------------------
+
+DEFAULT_OUTPUT = ""  # key meaning "system default"
+
+
+def list_output_devices() -> List[Tuple[str, str]]:
+    """(label, key) pairs for the output picker. On Linux with PulseAudio /
+    PipeWire the sinks are listed by their human names and selected through
+    the `pulse` PortAudio device; elsewhere PortAudio's own device names."""
+    devices: List[Tuple[str, str]] = [("System default", DEFAULT_OUTPUT)]
+    if platform.system() == "Linux" and shutil.which("pactl"):
+        try:
+            out = subprocess.run(["pactl", "-f", "json", "list", "sinks"], capture_output=True,
+                                 check=True, timeout=5).stdout
+            for sink in json.loads(out):
+                devices.append((sink.get("description") or sink["name"], "pulse:" + sink["name"]))
+            return devices
+        except Exception:
+            logging.getLogger(__name__).exception("pactl sink listing failed; falling back to PortAudio")
+    for d in sd.query_devices():
+        if d["max_output_channels"] > 0 and d["name"] not in ("default", "pulse", "pipewire"):
+            devices.append((d["name"], "pa:" + d["name"]))
+    return devices
+
+
+def _portaudio_device_index(name: str) -> Optional[int]:
+    for i, d in enumerate(sd.query_devices()):
+        if d["name"] == name and d["max_output_channels"] > 0:
+            return i
+    return None
+
+
 class ReferenceTrack(QObject):
     """Owns the decoded audio, its pitch estimates, and playback.
 
@@ -148,6 +183,7 @@ class ReferenceTrack(QObject):
         self.pitches: Optional[np.ndarray] = None
         self.step = 1
         self.transpose_semitones = 0
+        self.output_device = DEFAULT_OUTPUT
         self._thread: Optional[threading.Thread] = None
         self._generation = 0
 
@@ -227,15 +263,43 @@ class ReferenceTrack(QObject):
     def is_playing(self) -> bool:
         return self._stream is not None
 
+    def _open_stream(self) -> OutputStream:
+        key = self.output_device or DEFAULT_OUTPUT
+        kwargs = dict(samplerate=SAMPLING_RATE, channels=1, dtype="float32",
+                      callback=self._callback, finished_callback=self._on_finished)
+        if key.startswith("pulse:"):
+            # the ALSA pulse plugin honours PULSE_SINK when the stream is opened
+            device = _portaudio_device_index("pulse")
+            if device is None:
+                device = _portaudio_device_index("default")
+            previous = os.environ.get("PULSE_SINK")
+            os.environ["PULSE_SINK"] = key[len("pulse:"):]
+            try:
+                stream = OutputStream(device=device, **kwargs)
+                stream.start()
+            finally:
+                if previous is None:
+                    os.environ.pop("PULSE_SINK", None)
+                else:
+                    os.environ["PULSE_SINK"] = previous
+            return stream
+        if key.startswith("pa:"):
+            device = _portaudio_device_index(key[len("pa:"):])
+            if device is None:
+                self.logger.warning("output device %r not found; using default", key)
+            stream = OutputStream(device=device, **kwargs)
+        else:
+            stream = OutputStream(**kwargs)
+        stream.start()
+        return stream
+
     def play(self) -> None:
         if self.samples is None or self._stream is not None:
             return
         self._play_pos = 0
         self._start_monotonic = time.monotonic()
         try:
-            self._stream = OutputStream(samplerate=SAMPLING_RATE, channels=1, dtype="float32",
-                                        callback=self._callback, finished_callback=self._on_finished)
-            self._stream.start()
+            self._stream = self._open_stream()
         except Exception:
             self.logger.exception("could not open output stream for the reference track")
             self._stream = None

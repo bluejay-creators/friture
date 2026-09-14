@@ -157,6 +157,9 @@ class PitchTrackerWidget(QObject):
     def set_transpose(self, semitones: int) -> None:
         self.reference.transpose_semitones = semitones
 
+    def set_output_device(self, key: str) -> None:
+        self.reference.output_device = key
+
     def play_reference(self) -> None:
         self.reference.play()
 
