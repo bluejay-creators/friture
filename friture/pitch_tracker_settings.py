@@ -120,6 +120,17 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         ref_row.addWidget(self.ref_clear)
         self.form_layout.addRow("Reference:", ref_row)
 
+        from friture.reference_track import find_demucs
+        self.isolate = QtWidgets.QCheckBox("Isolate vocals (Demucs)", self)
+        self.isolate.setObjectName("isolate_vocals")
+        if find_demucs() is None:
+            self.isolate.setEnabled(False)
+            self.isolate.setToolTip("demucs not found — install it (uv tool install demucs) to separate vocals from a full mix")
+        else:
+            self.isolate.setToolTip("Separate the vocals from the accompaniment before tracking pitch; a few minutes per song on CPU, cached afterwards")
+        self.isolate.toggled.connect(self._on_isolate_toggled)
+        self.form_layout.addRow("", self.isolate)
+
         self.transpose = QtWidgets.QSpinBox(self)
         self.transpose.setRange(-24, 24)
         self.transpose.setValue(0)
@@ -138,6 +149,7 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         self.form_layout.addRow("", play_row)
 
         view_model.reference.loaded.connect(self._on_reference_loaded)
+        view_model.reference.progress.connect(self.ref_status.setText)
         view_model.reference.load_failed.connect(self._on_reference_failed)
         view_model.reference.playing_changed.connect(self._on_playing_changed)
 
@@ -157,7 +169,11 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         self.ref_label.setToolTip(path)
         self.ref_status.setText("loading…")
         self.ref_play.setEnabled(False)
-        self.view_model.set_reference_file(path)
+        self.view_model.set_reference_file(path, self.isolate.isChecked())
+
+    def _on_isolate_toggled(self, checked: bool) -> None:
+        if self.reference_path:
+            self._set_reference(self.reference_path)  # re-analyse with/without separation
 
     def _clear_reference(self) -> None:
         self.reference_path = ""
@@ -193,11 +209,16 @@ class PitchTrackerSettingsDialog(QtWidgets.QDialog):
         settings.setValue("sa_midi", self.sa.currentData())
         settings.setValue("reference_path", self.reference_path)
         settings.setValue("transpose", self.transpose.value())
+        settings.setValue("isolate_vocals", self.isolate.isChecked())
 
     def restore_state(self, settings: QSettings) -> None:
         self.sa.setCurrentIndex(self.sa.findData(
             settings.value("sa_midi", DEFAULT_SA_MIDI, type=int)))
         self.transpose.setValue(settings.value("transpose", 0, type=int))
+        # set the checkbox before the path so the restore triggers one load, not two
+        self.isolate.blockSignals(True)
+        self.isolate.setChecked(self.isolate.isEnabled() and settings.value("isolate_vocals", False, type=bool))
+        self.isolate.blockSignals(False)
         path = settings.value("reference_path", "", type=str)
         if path and os.path.exists(path):
             self._set_reference(path)

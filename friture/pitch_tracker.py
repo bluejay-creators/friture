@@ -148,8 +148,8 @@ class PitchTrackerWidget(QObject):
         return PitchTracker(input_buf, min_freq=self.min_freq, max_freq=self.max_freq,
                             min_db=self.tracker.min_db, conf=self.tracker.conf)
 
-    def set_reference_file(self, path: str) -> None:
-        self.reference.load(path, self._make_reference_tracker)
+    def set_reference_file(self, path: str, isolate_vocals: bool = False) -> None:
+        self.reference.load(path, self._make_reference_tracker, isolate_vocals)
 
     def clear_reference(self) -> None:
         self.reference.clear()

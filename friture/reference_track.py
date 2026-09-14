@@ -15,18 +15,23 @@
 # You should have received a copy of the GNU General Public License
 # along with Friture.  If not, see <http://www.gnu.org/licenses/>.
 
-"""Reference track for the pitch tracker: decode an audio file, run the same
-pitch estimator over it offline, and play it back while exposing its pitch
-curve on the live timeline so a singer can compare against it."""
+"""Reference track for the pitch tracker: decode an audio file (optionally
+isolating the vocals first), run the same pitch estimator over it offline, and
+play it back while exposing its pitch curve on the live timeline so a singer
+can compare against it."""
 
+import hashlib
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
+import sys
+import tempfile
 import threading
 import time
-from typing import Optional
+from typing import Callable, List, Optional
 
 import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -35,19 +40,31 @@ from sounddevice import OutputStream, CallbackStop
 from friture.audiobackend import SAMPLING_RATE
 from friture.ringbuffer import RingBuffer
 
+STEM_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "friture", "stems")
 
-def find_ffmpeg() -> Optional[str]:
-    """ffmpeg from PATH, else the usual package-manager locations — a bundled
-    .app launched from Finder/Dock does not inherit the shell's PATH."""
-    found = shutil.which("ffmpeg")
+
+def find_tool(name: str) -> Optional[str]:
+    """A CLI tool from PATH, else the usual per-user and package-manager
+    locations — a bundled .app launched from Finder/Dock does not inherit the
+    shell's PATH."""
+    found = shutil.which(name)
     if found:
         return found
     home = os.path.expanduser("~")
-    for candidate in (f"{home}/.nix-profile/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg",
-                      "/usr/local/bin/ffmpeg", "/usr/bin/ffmpeg"):
+    for directory in (f"{home}/.local/bin", f"{home}/.nix-profile/bin", "/opt/homebrew/bin",
+                      "/usr/local/bin", "/usr/bin"):
+        candidate = os.path.join(directory, name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
     return None
+
+
+def find_ffmpeg() -> Optional[str]:
+    return find_tool("ffmpeg")
+
+
+def find_demucs() -> Optional[str]:
+    return find_tool("demucs")
 
 
 def decode_audio(path: str, sample_rate: int = SAMPLING_RATE) -> np.ndarray:
@@ -62,6 +79,54 @@ def decode_audio(path: str, sample_rate: int = SAMPLING_RATE) -> np.ndarray:
     return np.frombuffer(result.stdout, dtype=np.float32)
 
 
+def separate_vocals(path: str, status: Callable[[str], None]) -> str:
+    """Return the path of a vocals-only stem for `path`, produced by Demucs
+    (htdemucs, two stems) and cached under STEM_CACHE_DIR keyed on the file's
+    identity, so a song is separated once."""
+    demucs = find_demucs()
+    if demucs is None:
+        raise RuntimeError("demucs not found; install it (e.g. `uv tool install demucs`) to isolate vocals")
+    st = os.stat(path)
+    key = hashlib.sha1(f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:16]
+    cached = os.path.join(STEM_CACHE_DIR, key, "vocals.wav")
+    if os.path.isfile(cached):
+        return cached
+
+    status("isolating vocals with Demucs… (a few minutes on CPU, once per song)")
+    os.makedirs(os.path.dirname(cached), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="friture-demucs-") as tmp:
+        cmd = [demucs, "--two-stems=vocals", "-n", "htdemucs", "-o", tmp, path]
+        # Demucs prints a tqdm bar on stderr; relay its percentage to the UI.
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        assert proc.stderr is not None
+        tail: List[str] = []
+        buf = b""
+        while True:
+            chunk = proc.stderr.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            # tqdm redraws with '\r'; split on either line ending
+            *lines, buf = re.split(rb"[\r\n]", buf)
+            for raw in lines:
+                line = raw.decode(errors="replace").strip()
+                if not line:
+                    continue
+                m = re.search(r"(\d{1,3})%\|", line)
+                if m:
+                    status(f"isolating vocals with Demucs… {m.group(1)}%")
+                else:
+                    tail = (tail + [line])[-3:]
+        proc.wait()
+        if proc.returncode != 0:
+            raise RuntimeError("demucs failed: " + " / ".join(tail))
+        stem = os.path.join(tmp, "htdemucs", os.path.splitext(os.path.basename(path))[0], "vocals.wav")
+        if not os.path.isfile(stem):
+            raise RuntimeError("demucs produced no vocals.wav")
+        shutil.move(stem, cached)
+    return cached
+
+
 class ReferenceTrack(QObject):
     """Owns the decoded audio, its pitch estimates, and playback.
 
@@ -71,6 +136,7 @@ class ReferenceTrack(QObject):
     """
 
     loaded = pyqtSignal(str)          # status text
+    progress = pyqtSignal(str)        # interim status text while loading
     load_failed = pyqtSignal(str)     # error text
     playing_changed = pyqtSignal(bool)
 
@@ -92,8 +158,9 @@ class ReferenceTrack(QObject):
 
     # ---- loading -------------------------------------------------------
 
-    def load(self, path: str, make_tracker) -> None:
-        """Decode and analyse `path` on a worker thread.
+    def load(self, path: str, make_tracker, isolate_vocals: bool = False) -> None:
+        """Decode (and optionally vocal-isolate) `path`, then analyse it, on a
+        worker thread.
 
         `make_tracker(input_buf)` must return a PitchTracker configured like the
         live one, so the reference is judged by the same rules.
@@ -107,13 +174,21 @@ class ReferenceTrack(QObject):
 
         def work() -> None:
             try:
+                # The vocal stem is only what the pitch tracker listens to; the
+                # singer still hears the original mix. Separation artefacts
+                # therefore never reach the ear, only the analysis.
+                analysis_path = separate_vocals(path, self.progress.emit) if isolate_vocals else path
+                if generation != self._generation:
+                    return
+                self.progress.emit("analysing pitch…")
                 samples = decode_audio(path)
+                analysis = samples if analysis_path == path else decode_audio(analysis_path)
                 tracker = make_tracker(RingBuffer())
                 step = math.floor(tracker.fft_size * (1.0 - tracker.overlap))
                 estimates = []
                 chunk = SAMPLING_RATE  # one second at a time keeps the ring buffer small
-                for start in range(0, samples.size, chunk):
-                    tracker.input_buf.push(samples[np.newaxis, start:start + chunk], 0.0)
+                for start in range(0, analysis.size, chunk):
+                    tracker.input_buf.push(analysis[np.newaxis, start:start + chunk], 0.0)
                     estimates.extend(tracker.estimate_pitch(f) for f in tracker.new_frames())
                 pitches = np.array(estimates, dtype=np.float64)
             except Exception as e:  # noqa: BLE001 - reported to the UI
@@ -128,7 +203,8 @@ class ReferenceTrack(QObject):
                 self.pitches = pitches
                 self.step = step
             voiced = int(np.isfinite(pitches).sum())
-            self.loaded.emit(f"{samples.size / SAMPLING_RATE:.0f} s, {voiced * step / SAMPLING_RATE:.0f} s voiced")
+            what = "vocals" if isolate_vocals else "mix"
+            self.loaded.emit(f"{samples.size / SAMPLING_RATE:.0f} s, {voiced * step / SAMPLING_RATE:.0f} s voiced ({what})")
 
         self._thread = threading.Thread(target=work, name="reference-track-load", daemon=True)
         self._thread.start()
