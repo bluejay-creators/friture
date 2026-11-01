@@ -1,0 +1,13 @@
+Tanpura recordings
+
+"Acoustic Tanpura" pack by sankalp (CompMusic project, Universitat Pompeu Fabra),
+https://freesound.org/people/sankalp/packs/9571/
+Licensed under Creative Commons Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+
+  153263.flac  Pa Sa Sa sa  https://freesound.org/s/153263/  (Acoustic Tanpura 4)
+  153267.flac  Ma Sa Sa sa  https://freesound.org/s/153267/  (Acoustic Tanpura 7)
+  153264.flac  Pa Ni Sa sa  https://freesound.org/s/153264/  (Acoustic Tanpura 9)
+  153266.flac  Pa Dha Sa sa https://freesound.org/s/153266/  (Acoustic Tanpura 6)
+
+Changes: converted losslessly from the original WAV files to FLAC. Friture loops,
+pitch-shifts and level-normalises them at playback.

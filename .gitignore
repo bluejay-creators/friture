@@ -47,3 +47,6 @@ Notepad++
 # Macos
 .DS_Store
 *.dmg
+# Tanpura recordings (~15 MB FLAC, CC BY 4.0) stay out of git; fetch them from
+# the freesound pack listed in friture/tanpura_samples/CREDITS.txt
+friture/tanpura_samples/*.flac
