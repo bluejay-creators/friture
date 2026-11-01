@@ -271,13 +271,64 @@ def midi_to_frequency(midi: int) -> float:
 def midi_to_western(midi: int) -> str:
     return f"{WESTERN_NAMES[midi % 12]}{midi // 12 - 1}"
 
-def pitch_class_color(pitch_class: int) -> str:
+# Grid colour styles (2026-09-25). "hierarchy" is the default: the two
+# immovable swaras anchor the grid, the other shuddha swaras sit behind them,
+# and the komal/tivra ones are faintest, so the lines a singer navigates by
+# stand out. "rainbow" is the original twelve-hue wheel, "sa" marks Sa alone.
+# Grid lines carry alpha so they work on either theme's background; labels stay
+# opaque so they stay readable.
+HIERARCHY, RAINBOW, SA_ONLY = "hierarchy", "rainbow", "sa"
+GRID_STYLES = [("Hierarchy (Sa + Pa)", HIERARCHY), ("Rainbow (all 12)", RAINBOW), ("Sa only", SA_ONLY)]
+DEFAULT_GRID_STYLE = HIERARCHY
+
+SA, PA = 0, 7
+SHUDDHA = {2, 4, 5, 9, 11}   # Re, Ga, ma, Dha, Ni (Sa and Pa handled above)
+
+SA_COLOR = "#c0392b"
+PA_COLOR = "#2f6fb8"
+
+GRID_ANCHOR_WIDTH = 2.0
+GRID_MID = "#99808080"       # shuddha: half-strength grey
+GRID_FAINT = "#40808080"     # komal/tivra: a hint of a line
+
+
+def rainbow_color(pitch_class: int) -> str:
     import colorsys
     r, g, b = colorsys.hls_to_rgb(pitch_class / 12.0, 0.45, 0.85)
     return "#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255))
 
-def Sargam(sa_midi: int):
-    '''Factory: a log2 scale anchored on the given Sa (MIDI note number).'''
+
+def pitch_class_color(pitch_class: int, style: str = DEFAULT_GRID_STYLE) -> str:
+    '''Label colour; empty means the theme's own text colour.'''
+    if style == RAINBOW:
+        return rainbow_color(pitch_class)
+    if style == SA_ONLY:
+        return SA_COLOR if pitch_class == SA else ""
+    if pitch_class == SA:
+        return SA_COLOR
+    if pitch_class == PA:
+        return PA_COLOR
+    return "" if pitch_class in SHUDDHA else "#808080"
+
+
+def pitch_class_grid(pitch_class: int, style: str = DEFAULT_GRID_STYLE) -> Tuple[str, float]:
+    '''Grid line (colour, width multiplier); empty colour means the default
+    grid colour, width 0 the default width.'''
+    anchor = GRID_ANCHOR_WIDTH if pitch_class == SA else 1.0
+    if style == RAINBOW:
+        return rainbow_color(pitch_class), anchor
+    if style == SA_ONLY:
+        return (SA_COLOR, GRID_ANCHOR_WIDTH) if pitch_class == SA else ("", 0.)
+    if pitch_class == SA:
+        return SA_COLOR, GRID_ANCHOR_WIDTH
+    if pitch_class == PA:
+        return PA_COLOR, GRID_ANCHOR_WIDTH
+    return (GRID_MID, 1.0) if pitch_class in SHUDDHA else (GRID_FAINT, 1.0)
+
+
+def Sargam(sa_midi: int, style: str = DEFAULT_GRID_STYLE):
+    '''Factory: a log2 scale anchored on the given Sa (MIDI note number),
+    coloured by one of GRID_STYLES.'''
     sa_freq = midi_to_frequency(sa_midi)
 
     class SargamScale(object):
@@ -308,13 +359,22 @@ def Sargam(sa_midi: int):
             return major_ticks, minor_ticks
 
         @staticmethod
+        def _semitones(frequency: float) -> int:
+            return int(round(np.log2(frequency / sa_freq) * 12))
+
+        @staticmethod
+        def tick_grid(frequency: float) -> Tuple[str, float]:
+            '''(colour, width) for this tick's grid line.'''
+            return pitch_class_grid(SargamScale._semitones(frequency) % 12, style)
+
+        @staticmethod
         def tick_info(frequency: float) -> Tuple[str, str]:
             '''(label, colour) for a tick: swara with octave mark + Western name.'''
             semis = int(round(np.log2(frequency / sa_freq) * 12))
             octave, pc = divmod(semis, 12)
             mark = "'" * octave if octave > 0 else "." * (-octave)
             label = f"{SARGAM_NAMES[pc]}{mark}  {midi_to_western(sa_midi + semis)}"
-            return label, pitch_class_color(pc)
+            return label, pitch_class_color(pc, style)
 
     return SargamScale
 

@@ -25,7 +25,7 @@ import friture.plotting.frequency_scales as fscales
 from friture.plotting.coordinateTransform import CoordinateTransform
 
 class Tick(QtCore.QObject):
-    def __init__(self, value, logical_value, parent=None, label="", color=""):
+    def __init__(self, value, logical_value, parent=None, label="", color="", grid_color="", grid_width=0.):
         super().__init__(parent)
         self._value = value
         self._logical_value = logical_value
@@ -33,6 +33,10 @@ class Tick(QtCore.QObject):
         # scales that provide tick_info() (sargam scale); empty = default look.
         self._label = label
         self._color = color
+        # Local patch (2026-09-25): the grid line is styled apart from the label
+        # so faint lines never make their label unreadable.
+        self._grid_color = grid_color
+        self._grid_width = grid_width
 
     @pyqtProperty(str, constant = True) # type: ignore
     def value(self):
@@ -49,6 +53,14 @@ class Tick(QtCore.QObject):
     @pyqtProperty(str, constant = True) # type: ignore
     def color(self):
         return self._color
+
+    @pyqtProperty(str, constant = True) # type: ignore
+    def gridColor(self):
+        return self._grid_color
+
+    @pyqtProperty(float, constant = True) # type: ignore
+    def gridWidth(self):
+        return self._grid_width
 
 # takes min/max of the scale, and returns appropriate ticks (selected for proper number, rounding)
 class ScaleDivision(QtCore.QObject):
@@ -100,12 +112,15 @@ class ScaleDivision(QtCore.QObject):
         digits = max(0, int(-precision))
 
         tick_info = getattr(self.scale, "tick_info", None)
+        tick_grid = getattr(self.scale, "tick_grid", None)
 
         def buildTick(tick):
             value = '{0:.{1}f}'.format(tick, digits)
             logical_value = self._logical_coordinate_transform.toScreen(tick)
             label, color = tick_info(tick) if tick_info else ("", "")
-            return Tick(value, logical_value, label=label, color=color)
+            grid_color, grid_width = tick_grid(tick) if tick_grid else ("", 0.)
+            return Tick(value, logical_value, label=label, color=color,
+                        grid_color=grid_color, grid_width=grid_width)
 
         self._logical_major_ticks = list(map(buildTick, self.major_ticks))
         self.logical_major_ticks_changed.emit()
@@ -114,7 +129,9 @@ class ScaleDivision(QtCore.QObject):
             value = tick
             logical_value = self._logical_coordinate_transform.toScreen(tick)
             label, color = tick_info(tick) if tick_info else ("", "")
-            return Tick(value, logical_value, label=label, color=color)
+            grid_color, grid_width = tick_grid(tick) if tick_grid else ("", 0.)
+            return Tick(value, logical_value, label=label, color=color,
+                        grid_color=grid_color, grid_width=grid_width)
 
         self._logical_minor_ticks = list(map(buildTick, self.minor_ticks))
         self.logical_minor_ticks_changed.emit()

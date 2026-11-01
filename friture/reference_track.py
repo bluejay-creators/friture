@@ -44,6 +44,12 @@ from friture.audiobackend import SAMPLING_RATE
 from friture.ringbuffer import RingBuffer
 
 STEM_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "friture", "stems")
+SHIFT_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "friture", "shifted")
+# rubberband shifts formants along with the pitch by default, which turns a
+# transposed singer into a cartoon; `formant=preserved` keeps the vocal tract
+# where it was. The options are part of the cache key, so changing them
+# re-renders rather than reusing an older, worse render.
+RUBBERBAND_OPTS = "formant=preserved:pitchq=quality:channels=together"
 
 
 def find_tool(name: str) -> Optional[str]:
@@ -80,6 +86,38 @@ def decode_audio(path: str, sample_rate: int = SAMPLING_RATE) -> np.ndarray:
     if result.returncode != 0:
         raise RuntimeError(result.stderr.decode(errors="replace").strip() or "ffmpeg failed")
     return np.frombuffer(result.stdout, dtype=np.float32)
+
+
+def pitch_shift(path: str, semitones: int, status: Callable[[str], None]) -> str:
+    """Return the path of `path` pitch-shifted by `semitones`, tempo unchanged
+    (ffmpeg's rubberband filter), cached under SHIFT_CACHE_DIR.
+
+    Lets a singer whose Sa differs from the recording's hear the song in their
+    own key instead of only seeing the reference curve moved.
+    """
+    ffmpeg = find_ffmpeg()
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg not found; install it to transpose playback")
+    st = os.stat(path)
+    key = hashlib.sha1(
+        f"{os.path.abspath(path)}|{st.st_size}|{int(st.st_mtime)}|{semitones}|{RUBBERBAND_OPTS}".encode()).hexdigest()[:16]
+    cached = os.path.join(SHIFT_CACHE_DIR, f"{key}.wav")
+    if os.path.isfile(cached):
+        return cached
+
+    status(f"transposing playback {semitones:+d} semitones…")
+    os.makedirs(SHIFT_CACHE_DIR, exist_ok=True)
+    tmp_out = cached + ".part"
+    cmd = [ffmpeg, "-v", "error", "-y", "-i", path,
+           "-filter:a", f"rubberband=pitch={2.0 ** (semitones / 12.0):.6f}:{RUBBERBAND_OPTS}",
+           "-ac", "1", "-ar", str(SAMPLING_RATE), "-f", "wav", tmp_out]
+    result = subprocess.run(cmd, capture_output=True, check=False)
+    if result.returncode != 0:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+        raise RuntimeError(result.stderr.decode(errors="replace").strip() or "ffmpeg rubberband failed")
+    os.replace(tmp_out, cached)
+    return cached
 
 
 def separate_vocals(path: str, status: Callable[[str], None]) -> str:
@@ -162,6 +200,37 @@ def _portaudio_device_index(name: str) -> Optional[int]:
     return None
 
 
+def open_output_stream(key: str, logger: logging.Logger, **kwargs) -> OutputStream:
+    """Open and start an OutputStream on the device a `list_output_devices` key
+    names (shared by the reference track and the metronome)."""
+    key = key or DEFAULT_OUTPUT
+    if key.startswith("pulse:"):
+        # the ALSA pulse plugin honours PULSE_SINK when the stream is opened
+        device = _portaudio_device_index("pulse")
+        if device is None:
+            device = _portaudio_device_index("default")
+        previous = os.environ.get("PULSE_SINK")
+        os.environ["PULSE_SINK"] = key[len("pulse:"):]
+        try:
+            stream = OutputStream(device=device, **kwargs)
+            stream.start()
+        finally:
+            if previous is None:
+                os.environ.pop("PULSE_SINK", None)
+            else:
+                os.environ["PULSE_SINK"] = previous
+        return stream
+    if key.startswith("pa:"):
+        device = _portaudio_device_index(key[len("pa:"):])
+        if device is None:
+            logger.warning("output device %r not found; using default", key)
+        stream = OutputStream(device=device, **kwargs)
+    else:
+        stream = OutputStream(**kwargs)
+    stream.start()
+    return stream
+
+
 class ReferenceTrack(QObject):
     """Owns the decoded audio, its pitch estimates, and playback.
 
@@ -183,6 +252,11 @@ class ReferenceTrack(QObject):
         self.pitches: Optional[np.ndarray] = None
         self.step = 1
         self.transpose_semitones = 0
+        # Playback follows the transpose: `samples` stays the recording as it
+        # is (used for analysis), `playback_samples` is what the singer hears,
+        # pitch-shifted into their own key when transpose is not zero.
+        self.playback_samples: Optional[np.ndarray] = None
+        self._shift_thread: Optional[threading.Thread] = None
         self.output_device = DEFAULT_OUTPUT
         self._thread: Optional[threading.Thread] = None
         self._generation = 0
@@ -236,8 +310,10 @@ class ReferenceTrack(QObject):
                 return  # superseded by a newer load
             with self._lock:
                 self.samples = samples
+                self.playback_samples = samples
                 self.pitches = pitches
                 self.step = step
+            self._prepare_playback()
             voiced = int(np.isfinite(pitches).sum())
             what = "vocals" if isolate_vocals else "mix"
             self.loaded.emit(f"{samples.size / SAMPLING_RATE:.0f} s, {voiced * step / SAMPLING_RATE:.0f} s voiced ({what})")
@@ -245,12 +321,48 @@ class ReferenceTrack(QObject):
         self._thread = threading.Thread(target=work, name="reference-track-load", daemon=True)
         self._thread.start()
 
+    def set_transpose(self, semitones: int) -> None:
+        """Move the reference curve, and the sound with it."""
+        if semitones == self.transpose_semitones:
+            return
+        self.transpose_semitones = semitones
+        self._prepare_playback()
+
+    def _prepare_playback(self) -> None:
+        """Render the transposed audio in the background; until it is ready the
+        original keeps playing, so changing the transpose never cuts the sound."""
+        path, semitones, generation = self.path, self.transpose_semitones, self._generation
+        if path is None or self.samples is None:
+            return
+        if semitones == 0:
+            with self._lock:
+                self.playback_samples = self.samples
+            return
+
+        def work() -> None:
+            try:
+                shifted = decode_audio(pitch_shift(path, semitones, self.progress.emit))
+            except Exception as e:  # noqa: BLE001 - reported to the UI
+                self.logger.exception("pitch shift failed")
+                if generation == self._generation:
+                    self.load_failed.emit(str(e))
+                return
+            if generation != self._generation or semitones != self.transpose_semitones:
+                return  # superseded
+            with self._lock:
+                self.playback_samples = shifted
+            self.loaded.emit(f"playing {semitones:+d} semitones")
+
+        self._shift_thread = threading.Thread(target=work, name="reference-pitch-shift", daemon=True)
+        self._shift_thread.start()
+
     def clear(self) -> None:
         self.stop()
         self._generation += 1
         self.path = None
         with self._lock:
             self.samples = None
+            self.playback_samples = None
             self.pitches = None
         self._start_monotonic = None
         self._play_pos = 0
@@ -264,37 +376,12 @@ class ReferenceTrack(QObject):
         return self._stream is not None
 
     def _open_stream(self) -> OutputStream:
-        key = self.output_device or DEFAULT_OUTPUT
-        kwargs = dict(samplerate=SAMPLING_RATE, channels=1, dtype="float32",
-                      callback=self._callback, finished_callback=self._on_finished)
-        if key.startswith("pulse:"):
-            # the ALSA pulse plugin honours PULSE_SINK when the stream is opened
-            device = _portaudio_device_index("pulse")
-            if device is None:
-                device = _portaudio_device_index("default")
-            previous = os.environ.get("PULSE_SINK")
-            os.environ["PULSE_SINK"] = key[len("pulse:"):]
-            try:
-                stream = OutputStream(device=device, **kwargs)
-                stream.start()
-            finally:
-                if previous is None:
-                    os.environ.pop("PULSE_SINK", None)
-                else:
-                    os.environ["PULSE_SINK"] = previous
-            return stream
-        if key.startswith("pa:"):
-            device = _portaudio_device_index(key[len("pa:"):])
-            if device is None:
-                self.logger.warning("output device %r not found; using default", key)
-            stream = OutputStream(device=device, **kwargs)
-        else:
-            stream = OutputStream(**kwargs)
-        stream.start()
-        return stream
+        return open_output_stream(self.output_device, self.logger,
+                                  samplerate=SAMPLING_RATE, channels=1, dtype="float32",
+                                  callback=self._callback, finished_callback=self._on_finished)
 
     def play(self) -> None:
-        if self.samples is None or self._stream is not None:
+        if self.playback_samples is None or self._stream is not None:
             return
         self._play_pos = 0
         self._start_monotonic = time.monotonic()
@@ -319,7 +406,7 @@ class ReferenceTrack(QObject):
         self.playing_changed.emit(False)
 
     def _callback(self, out_data: np.ndarray, frames: int, time_info, status) -> None:
-        samples = self.samples
+        samples = self.playback_samples
         if samples is None:
             out_data.fill(0)
             raise CallbackStop()

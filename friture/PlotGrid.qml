@@ -19,7 +19,8 @@ Item {
     property bool show_minor_horizontal: false
 
     // QML docs discourage the use of multiple Shape objects. But the Repeater cannot be used inside Shape.
-    // Ticks may carry their own colour (sargam scale); Sa lines are drawn thicker.
+    // Ticks may carry their own grid style (sargam scale): Sa and Pa anchor the
+    // grid in colour and double width, the rest are grey and thin.
     Repeater {
         model: vertical_scale_division.logicalMajorTicks
 
@@ -27,8 +28,8 @@ Item {
             y: (1. - modelData.logicalValue) * plotGrid.height
 
             ShapePath {
-                strokeWidth: modelData.color !== "" ? 2 * lineWidth : lineWidth
-                strokeColor: modelData.color !== "" ? modelData.color : lineColor
+                strokeWidth: modelData.gridWidth > 0 ? modelData.gridWidth * lineWidth : lineWidth
+                strokeColor: modelData.gridColor !== "" ? modelData.gridColor : lineColor
                 fillColor: "transparent"
                 scale: Qt.size(plotGrid.width, 1)
 
@@ -45,8 +46,8 @@ Item {
             y: (1. - modelData.logicalValue) * plotGrid.height
 
             ShapePath {
-                strokeWidth: lineWidth
-                strokeColor: modelData.color !== "" ? modelData.color : lineColor
+                strokeWidth: modelData.gridWidth > 0 ? modelData.gridWidth * lineWidth : lineWidth
+                strokeColor: modelData.gridColor !== "" ? modelData.gridColor : lineColor
                 fillColor: "transparent"
                 scale: Qt.size(plotGrid.width, 1)
 

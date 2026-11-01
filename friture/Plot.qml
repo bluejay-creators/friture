@@ -17,6 +17,10 @@ Rectangle {
     // Local patch (2026-09-13): place the vertical scale (and its axis name) to the
     // right of the plot area instead of the left. Used by the pitch tracker.
     property bool verticalScaleOnRight: false
+    // Local patch (2026-10-31): float the legend over the top-right corner of the
+    // plot area instead of giving it a layout column, so curves coming and going
+    // (beats, tanpura) don't shift the plot or push the vertical scale away.
+    property bool legendInPlot: false
 
     GridLayout {
         anchors.fill: parent
@@ -85,6 +89,24 @@ Rectangle {
                 id: plotItemPlaceholder
                 anchors.fill: parent
             }
+
+            Rectangle {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.margins: 4
+                z: 1
+                width: overlayLegend.implicitWidth
+                height: overlayLegend.implicitHeight
+                visible: plot.legendInPlot && scopedata.show_legend && scopedata.plot_items.length > 1
+                color: Qt.rgba(systemPalette.window.r, systemPalette.window.g, systemPalette.window.b, 0.85)
+                border.color: systemPalette.mid
+                radius: 3
+
+                Legend {
+                    id: overlayLegend
+                    scopedata: plot.scopedata
+                }
+            }
         }
 
         Item {
@@ -101,7 +123,7 @@ Rectangle {
             Layout.row: 1
             Layout.column: 4
             Layout.alignment: Qt.AlignTop | Qt.AlignLeft
-            visible: scopedata.show_legend && scopedata.plot_items.length > 1
+            visible: !plot.legendInPlot && scopedata.show_legend && scopedata.plot_items.length > 1
 
             scopedata: plot.scopedata
         }

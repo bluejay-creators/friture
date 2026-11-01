@@ -52,9 +52,46 @@ from friture.pitch_tracker_settings import (
 )
 from friture.plotting.coordinateTransform import CoordinateTransform
 import friture.plotting.frequency_scales as fscales
+from friture.metronome import Metronome
+from friture.tanpura import Tanpura
 from friture.reference_track import ReferenceTrack
+from friture.voice_monitor import VoiceMonitor
 from friture.ringbuffer import RingBuffer
 from friture.store import GetStore
+
+# Local patch (2026-09-25): colours no grid line uses, so neither curve can be
+# confused with a swara line behind it.
+VOICE_COLOR = "#d98a1f"      # amber
+REFERENCE_COLOR = "#1a9a92"  # teal
+TANPURA_COLOR = "#9b59b6"    # purple: drone notes, apart from the red Sa / blue Pa grid
+
+# Intonation shading for the live curve: green while the note sits where it
+# should, red once it is half a semitone away. Measured against the reference
+# track while one plays, otherwise against the nearest swara.
+IN_TUNE_CENTS = 10.0   # within this, fully green
+OFF_CENTS = 50.0       # at this and beyond, fully red
+_GREEN = np.array([47, 191, 95], dtype=float)
+_AMBER = np.array([217, 162, 31], dtype=float)
+_RED = np.array([217, 79, 61], dtype=float)
+
+
+def accuracy_colors(cents: np.ndarray) -> np.ndarray:
+    """Per-sample RGBA (N x 4 uint8) from an absolute pitch error in cents.
+
+    Samples with no estimate (NaN) are drawn as gaps anyway, but still need a
+    colour, so they take the far end of the ramp.
+    """
+    span = np.clip((np.abs(cents) - IN_TUNE_CENTS) / (OFF_CENTS - IN_TUNE_CENTS), 0.0, 1.0)
+    span = np.nan_to_num(span, nan=1.0)
+    first_half = span < 0.5
+    u = np.where(first_half, span * 2.0, (span - 0.5) * 2.0)[:, None]
+    start = np.where(first_half[:, None], _GREEN, _AMBER)
+    end = np.where(first_half[:, None], _AMBER, _RED)
+    colors = np.empty((cents.size, 4), dtype=np.uint8)
+    colors[:, :3] = (start + (end - start) * u).astype(np.uint8)
+    colors[:, 3] = 255
+    return colors
+
 
 class PitchTrackerWidget(QObject):
     def __init__(self, parent: QtWidgets.QWidget):
@@ -66,14 +103,35 @@ class PitchTrackerWidget(QObject):
 
         self._curve = Curve()
         self._curve.name = "Voice" # type: ignore [assignment]
+        self._curve.color = VOICE_COLOR # type: ignore [assignment]
         self._pitch_tracker_data.add_plot_item(self._curve)
 
         # Reference track (a song or a teacher's recording) drawn as a second
         # curve on the same timeline while it plays, for comparison.
         self._ref_curve = Curve()
         self._ref_curve.name = "Reference" # type: ignore [assignment]
+        self._ref_curve.color = REFERENCE_COLOR # type: ignore [assignment]
         self._pitch_tracker_data.add_plot_item(self._ref_curve)
         self.reference = ReferenceTrack(self)
+        self.monitor = VoiceMonitor()
+
+        # Taal metronome: its beats are a third curve, kept out of the plot
+        # (and the legend) while the metronome is off, and drawn first so the
+        # pitch curves sit on top of the beat lines.
+        self._beats_curve = Curve()
+        self._beats_curve.name = "Beats" # type: ignore [assignment]
+        self._beats_curve.color = "#808080" # type: ignore [assignment]
+        self._beats_curve.setParent(self)
+        self.metronome = Metronome(self)
+        # Tanpura drone, on an output of its own (typically a room speaker); its
+        # notes are drawn as lines while it plays, kept out of the plot (and the
+        # legend) otherwise.
+        self.tanpura = Tanpura(self)
+        self._drone_curve = Curve()
+        self._drone_curve.name = "Tanpura" # type: ignore [assignment]
+        self._drone_curve.color = TANPURA_COLOR # type: ignore [assignment]
+        self._drone_curve.setParent(self)
+        self.show_drone_lines = True
 
         # cast for qt properties which aren't properly typed
         tracker_data: Any = self._pitch_tracker_data
@@ -93,6 +151,7 @@ class PitchTrackerWidget(QObject):
             self.min_freq, self.max_freq, 1, 0, 0)
         # Local patch (2026-09-13): sargam axis anchored on a configurable Sa
         # (replaces the fixed OctaveC scale; same log2 mapping, different ticks).
+        self.grid_style = fscales.DEFAULT_GRID_STYLE
         self.set_sa(DEFAULT_SA_MIDI)
 
         self.duration = DEFAULT_DURATION
@@ -124,12 +183,60 @@ class PitchTrackerWidget(QObject):
     def update_curve(self) -> None:
         pitches = self.tracker.get_estimates(self.duration)
         times = np.linspace(0, 1.0, pitches.shape[0])
-        self._curve.setData(times, self._to_screen(pitches))
 
         ref = self.reference.window(time.monotonic(), self.duration, pitches.shape[0])
         if ref is None:
             ref = np.full(pitches.shape[0], np.nan)
+
+        self._curve.setData(times, self._to_screen(pitches),
+                            accuracy_colors(self._deviation_cents(pitches, ref)))
         self._ref_curve.setData(times, self._to_screen(ref))
+
+        self._update_drone_lines()
+
+        if self.metronome.is_running():
+            lines = self.metronome.beat_lines(time.monotonic(), self.duration)
+            if lines is None:
+                self._beats_curve.setData(np.array([np.nan]), np.array([np.nan]))
+            else:
+                self._beats_curve.setData(*lines)
+
+    def _update_drone_lines(self) -> None:
+        items = self._pitch_tracker_data._plot_items
+        shown = self.show_drone_lines and self.tanpura.is_on()
+        if not shown:
+            if self._drone_curve in items:
+                self._pitch_tracker_data.remove_plot_item(self._drone_curve)
+            return
+        freqs = self.tanpura.drone_frequencies(self.min_freq, self.max_freq)
+        if not freqs:
+            self._drone_curve.setData(np.array([np.nan]), np.array([np.nan]))
+        else:
+            y = np.repeat(self._to_screen(np.array(freqs)), 3)
+            y[2::3] = np.nan
+            x = np.tile([0.0, 1.0, np.nan], len(freqs))
+            self._drone_curve.setData(x, y)
+        if self._drone_curve not in items:
+            self._pitch_tracker_data.insert_plot_item(0, self._drone_curve)
+
+    def _deviation_cents(self, pitches: np.ndarray, ref: np.ndarray) -> np.ndarray:
+        """How far each estimate sits from where it should be, in cents.
+
+        Against the reference while it plays, else against the nearest swara of
+        the Sa grid. Octave displacement is folded out of the reference error:
+        singing the same swara an octave down is in tune, not 1200 cents flat
+        (use Transpose to shift the reference itself).
+        """
+        sung = np.where(pitches > 0, pitches, np.nan)
+        sa_freq = fscales.midi_to_frequency(self.sa_midi)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            semitones = 12.0 * np.log2(sung / sa_freq)
+            cents = 100.0 * (semitones - np.round(semitones))
+            if self.reference.is_playing():
+                against_ref = 1200.0 * np.log2(sung / np.where(ref > 0, ref, np.nan))
+                against_ref -= 1200.0 * np.round(against_ref / 1200.0)
+                cents = np.where(np.isfinite(against_ref), against_ref, cents)
+        return cents
 
     def _to_screen(self, pitches: np.ndarray) -> np.ndarray:
         # Local patch (2026-09-13): unvoiced frames are NaN and the ring buffer
@@ -155,10 +262,71 @@ class PitchTrackerWidget(QObject):
         self.reference.clear()
 
     def set_transpose(self, semitones: int) -> None:
-        self.reference.transpose_semitones = semitones
+        self.reference.set_transpose(semitones)
 
     def set_output_device(self, key: str) -> None:
         self.reference.output_device = key
+        self.metronome.set_output_device(key)
+        self.monitor.set_sink(key[len("pulse:"):] if key.startswith("pulse:") else None)
+
+    # ---- voice monitoring --------------------------------------------------
+
+    def set_monitor_enabled(self, enabled: bool) -> None:
+        if enabled:
+            self.monitor.start()
+        else:
+            self.monitor.stop()
+
+    def set_monitor_volume(self, percent: int) -> None:
+        self.monitor.set_volume(percent)
+
+    # ---- metronome ---------------------------------------------------------
+
+    def set_metronome_enabled(self, enabled: bool) -> None:
+        items = self._pitch_tracker_data._plot_items
+        if enabled:
+            self.metronome.start()
+            if self.metronome.is_running() and self._beats_curve not in items:
+                self._pitch_tracker_data.insert_plot_item(0, self._beats_curve)
+        else:
+            self.metronome.stop()
+            if self._beats_curve in items:
+                self._pitch_tracker_data.remove_plot_item(self._beats_curve)
+
+    def set_metronome_bpm(self, bpm: int) -> None:
+        self.metronome.set_bpm(bpm)
+
+    def set_metronome_taal(self, taal: str) -> None:
+        self.metronome.set_taal(taal)
+
+    def set_metronome_volume(self, percent: int) -> None:
+        self.metronome.set_volume(percent)
+
+    # ---- tanpura -----------------------------------------------------------
+
+    def set_tanpura_enabled(self, enabled: bool) -> None:
+        if enabled:
+            self.tanpura.start()
+        else:
+            self.tanpura.stop()
+
+    def set_tanpura_tuning(self, key: str) -> None:
+        self.tanpura.set_tuning(key)
+
+    def set_tanpura_cents(self, cents: int) -> None:
+        self.tanpura.set_cents(cents)
+
+    def set_tanpura_volume(self, percent: int) -> None:
+        self.tanpura.set_volume(percent)
+
+    def set_tanpura_output_device(self, key: str) -> None:
+        self.tanpura.set_output_device(key)
+
+    def set_tanpura_lines(self, shown: bool) -> None:
+        self.show_drone_lines = shown
+
+    def set_metronome_sound(self, on: bool) -> None:
+        self.metronome.set_sound(on)
 
     def play_reference(self) -> None:
         self.reference.play()
@@ -168,6 +336,9 @@ class PitchTrackerWidget(QObject):
 
     def cleanup(self) -> None:
         self.reference.stop()
+        self.monitor.stop()
+        self.metronome.stop()
+        self.tanpura.stop()
 
     # method
     def canvasUpdate(self) -> None:
@@ -192,12 +363,18 @@ class PitchTrackerWidget(QObject):
 
     def set_sa(self, sa_midi: int) -> None:
         self.sa_midi = sa_midi
-        scale = fscales.Sargam(sa_midi)
+        scale = fscales.Sargam(sa_midi, self.grid_style)
         self._pitch_tracker_data.vertical_axis.setScale(scale) # type: ignore
         self.vertical_transform.setScale(scale)
         self._pitch_tracker_data.sa_midi = sa_midi # type: ignore
+        if hasattr(self, "tanpura"):
+            self.tanpura.set_sa(fscales.midi_to_frequency(sa_midi))
         if hasattr(self, "tracker"):  # first call happens before the tracker exists
             self.update_curve()
+
+    def set_grid_style(self, style: str) -> None:
+        self.grid_style = style
+        self.set_sa(self.sa_midi)  # rebuild the scale with the new colours
 
     def set_min_db(self, value: float) -> None:
         self.tracker.min_db = value

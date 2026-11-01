@@ -14,6 +14,7 @@ Item {
         scopedata: viewModel
         // Local patch (2026-09-13): note readout on the left, frequency scale on the right
         verticalScaleOnRight: true
+        legendInPlot: true
 
         anchors.fill: null // override 'fill: parent' in Plot.qml
         anchors.left: pitchItem.right
@@ -26,7 +27,7 @@ Item {
 
             PlotCurve {
                 anchors.fill: parent
-                color: PlotItemColors.color(index)
+                color: modelData.color ? modelData.color : PlotItemColors.color(index)
                 curve: modelData
             }
         }

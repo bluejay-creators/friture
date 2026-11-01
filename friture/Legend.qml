@@ -9,6 +9,7 @@ Item {
     required property ScopeData scopedata
 
     implicitWidth: childrenRect.width
+    implicitHeight: childrenRect.height
     
     Column {
         padding: 4
@@ -25,7 +26,7 @@ Item {
                     anchors.verticalCenter: curve1legend.verticalCenter
                     ShapePath {
                         strokeWidth: 1
-                        strokeColor: PlotItemColors.color(index)
+                        strokeColor: modelData.color ? modelData.color : PlotItemColors.color(index)
                         fillColor: "transparent"
                         PathLine { x: 20; y: 0 }
                     }
