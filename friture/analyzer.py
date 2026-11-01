@@ -47,6 +47,7 @@ from friture.settings import Settings_Dialog  # Setting dialog
 from friture.audiobuffer import AudioBuffer  # audio ring buffer class
 from friture.audiobackend import AudioBackend  # audio backend class
 from friture.dockmanager import DockManager
+from friture.riyaz_watch import InputWatch, HangWatch
 from friture.tilelayout import TileLayout
 from friture.level_view_model import LevelViewModel
 from friture.level_data import LevelData
@@ -188,6 +189,10 @@ class Friture(QMainWindow, ):
         self.playback_widget = PlaybackControlWidget(self, self.player, self._main_window_view_model.playback_control_view_model)
 
         self.dockmanager = DockManager(self, self.main_tile_layout)
+
+        # Local patch (2026-10-31): recover from mic dropouts; log stacks on a freeze
+        self.input_watch = InputWatch(self)
+        self.hang_watch = HangWatch(self)
 
         # timer ticks
         self.display_timer.timeout.connect(self.dockmanager.canvasUpdate)

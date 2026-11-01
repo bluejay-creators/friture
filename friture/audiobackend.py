@@ -127,6 +127,24 @@ class __AudioBackend(QtCore.QObject):
         # not spam the log on every fetch cycle.
         self._last_lag_warning = 0.0
 
+        # when audio last arrived, and when it was last asked for (the display
+        # timer stops while recording is paused), for riyaz_watch.InputWatch
+        self._last_input = time.monotonic()
+        self._last_fetch = 0.0
+
+    def seconds_without_input(self) -> float:
+        """How long the input has delivered nothing while being read; 0 when paused."""
+        now = time.monotonic()
+        if now - self._last_fetch > 1.0:
+            self._last_input = now
+            return 0.0
+        return now - self._last_input
+
+    def reopen_input(self) -> None:
+        if self.device is not None and self.device in self.input_devices:
+            self.select_input_device(self.input_devices.index(self.device))
+            self._last_input = time.monotonic()
+
     def close(self):
         if self.stream is not None:
             self.stream.stop()
@@ -456,6 +474,10 @@ class __AudioBackend(QtCore.QObject):
     def fetchAudioData(self):
         if self.action is None or self.ringBuffer is None:
             return
+
+        self._last_fetch = time.monotonic()
+        if self.ringBuffer.read_available >= FRAMES_PER_BUFFER:
+            self._last_input = self._last_fetch
 
         while self.ringBuffer.read_available >= FRAMES_PER_BUFFER:
             read, buf1, buf2 = self.ringBuffer.get_read_buffers(FRAMES_PER_BUFFER)
